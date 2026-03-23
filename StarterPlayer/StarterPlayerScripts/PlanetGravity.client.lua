@@ -1,30 +1,47 @@
--- Correct client script that fires PlanetGravityInput with moveInput and jumpRequested
 local Players = game:GetService("Players")
-local player = Players.LocalPlayer
-
-local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local moveInput = Vector3.new(0, 0, 0)
-local jumpRequested = false
+local player = Players.LocalPlayer
+local remote = ReplicatedStorage:WaitForChild("PlanetGravityInput")
 
-UserInputService.InputChanged:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.Keyboard then
-        if input.KeyCode == Enum.KeyCode.W then
-            moveInput = Vector3.new(0, 0, 1)
-        elseif input.KeyCode == Enum.KeyCode.S then
-            moveInput = Vector3.new(0, 0, -1)
-        else
-            moveInput = Vector3.new(0, 0, 0)
-        end
-    end
-end)
+local jumpQueued = false
 
 UserInputService.JumpRequest:Connect(function()
-    jumpRequested = true
+	jumpQueued = true
 end)
 
+local function getMoveInput()
+	local x = 0
+	local z = 0
+
+	if UserInputService:IsKeyDown(Enum.KeyCode.A) then
+		x -= 1
+	end
+	if UserInputService:IsKeyDown(Enum.KeyCode.D) then
+		x += 1
+	end
+	if UserInputService:IsKeyDown(Enum.KeyCode.W) then
+		z -= 1
+	end
+	if UserInputService:IsKeyDown(Enum.KeyCode.S) then
+		z += 1
+	end
+
+	local v = Vector3.new(x, 0, z)
+	if v.Magnitude > 1 then
+		v = v.Unit
+	end
+
+	return v
+end
+
 RunService.RenderStepped:Connect(function()
-    game.ReplicatedStorage.PlanetGravityInput:Fire(moveInput, jumpRequested)
-    jumpRequested = false
+	remote:FireServer({
+		moveInput = getMoveInput(),
+		jumpRequested = jumpQueued,
+	})
+
+	jumpQueued = false
 end)

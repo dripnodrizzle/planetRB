@@ -38,7 +38,7 @@ local function getMoveInput()
 end
 
 RunService.RenderStepped:Connect(function()
-emote:FireServer({
+	remote:FireServer({
 		moveInput = getMoveInput(),
 		jumpRequested = jumpQueued,
 	})

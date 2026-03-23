@@ -1,4 +1,4 @@
--- ServerScriptService/PlanetGravity.server.lua
+-- PlanetGravity.server.lua
 
 -- Server-authoritative spherical gravity + camera-relative movement (multi-planet)
 -- Requires:

@@ -3,9 +3,7 @@ local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 
-Workspace.Gravity = 0
-
-local PLANET_CORE = Workspace:WaitForChild("PlanetCore")
+local PLANETS_FOLDER = Workspace:WaitForChild("Planets")
 local REMOTE_NAME = "PlanetGravityInput"
 
 local GRAVITY_ACCELERATION = 260
@@ -14,13 +12,13 @@ local AIR_CONTROL_SPEED = 12
 local JUMP_SPEED = 62
 local JUMP_COOLDOWN = 0.28
 local JUMP_AIR_LOCK = 0.20
-local GROUND_CHECK_DISTANCE = 9
+local GROUND_CHECK_DISTANCE = 10
 local IDLE_DAMPING = 0.82
 local TARGET_HIP_HEIGHT = 5.0
 local SURFACE_CLEARANCE = 0.9
 
-local ALIGN_RESPONSIVENESS = 10
-local ALIGN_MAX_TORQUE = 35000
+local ALIGN_RESPONSIVENESS = 12
+local ALIGN_MAX_TORQUE = 40000
 local GROUND_MOVE_BLEND = 0.18
 local AIR_MOVE_BLEND = 0.08
 local SURFACE_PUSH_SCALE = 18
@@ -33,7 +31,24 @@ remote.Name = REMOTE_NAME
 remote.Parent = ReplicatedStorage
 end
 
-local states = {}
+type State = {
+Player: Player,
+Humanoid: Humanoid,
+RootPart: BasePart,
+GravityForce: VectorForce,
+Align: AlignOrientation,
+
+MoveAxis: Vector3,
+JumpRequested: boolean,
+CamForward: Vector3,
+CamRight: Vector3,
+
+LastForward: Vector3,
+LastJumpTime: number,
+AirUntil: number,
+}
+
+local states: {[Model]: State} = {}
 
 local function safeUnit(v: Vector3, fallback: Vector3): Vector3
 if v.Magnitude > 1e-5 then
@@ -46,8 +61,30 @@ local function projectOntoPlane(v: Vector3, normal: Vector3): Vector3
 return v - normal * v:Dot(normal)
 end
 
-local function getPlanetUp(worldPosition: Vector3): Vector3
-return safeUnit(worldPosition - PLANET_CORE.Position, Vector3.new(0, 1, 0))
+local function getPlanetModelById(planetId: string): Model?
+if planetId == "" then return nil end
+for _, p in ipairs(PLANETS_FOLDER:GetChildren()) do
+if p:IsA("Model") then
+local id = p:GetAttribute("PlanetId")
+if (typeof(id) == "string" and id == planetId) or p.Name == planetId then
+return p
+end
+end
+end
+return nil
+end
+
+local function getCoreForCharacter(character: Model): BasePart?
+local planetId = character:GetAttribute("ActivePlanetId")
+if typeof(planetId) ~= "string" then return nil end
+local planet = getPlanetModelById(planetId)
+if not planet then return nil end
+
+local core = planet:FindFirstChild("Core")
+if core and core:IsA("BasePart") then
+return core
+end
+return nil
 end
 
 local function makeRayParams(character: Model): RaycastParams
@@ -58,13 +95,15 @@ params.IgnoreWater = false
 return params
 end
 
-local function getGroundHit(character: Model, rootPart: BasePart)
-local upDir = getPlanetUp(rootPart.Position)
-local gravityDir = -upDir
+local function getPlanetUp(rootPos: Vector3, corePos: Vector3): Vector3
+return safeUnit(rootPos - corePos, Vector3.new(0, 1, 0))
+end
 
+local function getGroundHit(character: Model, rootPart: BasePart, corePos: Vector3)
+local upDir = getPlanetUp(rootPart.Position, corePos)
 return Workspace:Raycast(
 rootPart.Position,
-gravityDir * GROUND_CHECK_DISTANCE,
+(-upDir) * GROUND_CHECK_DISTANCE,
 makeRayParams(character)
 )
 end
@@ -74,24 +113,23 @@ for _, name in ipairs({
 "PlanetGravityAttachment",
 "PlanetGravityForce",
 "PlanetAlignOrientation",
-"GravityDebug",
 }) do
 local obj = rootPart:FindFirstChild(name)
-if obj then
-obj:Destroy()
-end
+if obj then obj:Destroy() end
 end
 end
 
 local function setupCharacter(character: Model)
 local player = Players:GetPlayerFromCharacter(character)
+if not player then return end
+
 local humanoid = character:WaitForChild("Humanoid") :: Humanoid
 local rootPart = character:WaitForChild("HumanoidRootPart") :: BasePart
 
 cleanupOldObjects(rootPart)
 
 pcall(function()
-rootPart:SetNetworkOwner(player)
+rootPart:SetNetworkOwner(nil)
 end)
 
 humanoid.AutoRotate = false
@@ -100,11 +138,6 @@ humanoid.JumpPower = 0
 humanoid.UseJumpPower = true
 humanoid.MaxSlopeAngle = 89
 humanoid.HipHeight = math.max(humanoid.HipHeight, TARGET_HIP_HEIGHT)
-
-humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
-humanoid:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
-humanoid:SetStateEnabled(Enum.HumanoidStateType.PlatformStanding, false)
-humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, false)
 
 local attachment = Instance.new("Attachment")
 attachment.Name = "PlanetGravityAttachment"
@@ -127,28 +160,21 @@ align.Responsiveness = ALIGN_RESPONSIVENESS
 align.MaxTorque = ALIGN_MAX_TORQUE
 align.Parent = rootPart
 
-local debugPart = Instance.new("Part")
-debugPart.Name = "GravityDebug"
-debugPart.Anchored = false
-debugPart.CanCollide = false
-debugPart.Massless = true
-debugPart.Material = Enum.Material.Neon
-debugPart.Color = Color3.fromRGB(255, 0, 0)
-debugPart.Size = Vector3.new(0.35, 0.35, 10)
-debugPart.Parent = rootPart
-
 states[character] = {
 Player = player,
 Humanoid = humanoid,
 RootPart = rootPart,
 GravityForce = gravityForce,
 Align = align,
-MoveInput = Vector3.zero,
+
+MoveAxis = Vector3.zero,
 JumpRequested = false,
+CamForward = Vector3.new(0, 0, -1),
+CamRight = Vector3.new(1, 0, 0),
+
 LastForward = Vector3.new(0, 0, -1),
 LastJumpTime = 0,
 AirUntil = 0,
-LastDebugPrint = 0,
 }
 
 character.AncestryChanged:Connect(function(_, parent)
@@ -158,86 +184,65 @@ end
 end)
 end
 
-local function cleanupCharacter(character: Model)
-states[character] = nil
-end
-
 remote.OnServerEvent:Connect(function(player, payload)
-if typeof(payload) ~= "table" then
-return
-end
-
+if typeof(payload) ~= "table" then return end
 local character = player.Character
-if not character then
-return
-end
-
+if not character then return end
 local state = states[character]
-if not state then
-return
-end
+if not state then return end
 
-if typeof(payload.moveInput) == "Vector3" then
-state.MoveInput = payload.moveInput
+if typeof(payload.moveAxis) == "Vector3" then
+local v = Vector3.new(payload.moveAxis.X, 0, payload.moveAxis.Z)
+if v.Magnitude > 1 then v = v.Unit end
+state.MoveAxis = v
 end
 
 if typeof(payload.jumpRequested) == "boolean" then
 state.JumpRequested = payload.jumpRequested
 end
+
+if typeof(payload.camForward) == "Vector3" then
+state.CamForward = payload.camForward
+end
+if typeof(payload.camRight) == "Vector3" then
+state.CamRight = payload.camRight
+end
 end)
 
 Players.PlayerAdded:Connect(function(player)
 player.CharacterAdded:Connect(setupCharacter)
-player.CharacterRemoving:Connect(cleanupCharacter)
-
-if player.Character then
-setupCharacter(player.Character)
-end
 end)
 
 for _, player in ipairs(Players:GetPlayers()) do
+if player.Character then setupCharacter(player.Character) end
 player.CharacterAdded:Connect(setupCharacter)
-player.CharacterRemoving:Connect(cleanupCharacter)
-
-if player.Character then
-setupCharacter(player.Character)
-end
 end
 
 RunService.Heartbeat:Connect(function()
 for character, state in pairs(states) do
 local humanoid = state.Humanoid
 local rootPart = state.RootPart
-
-if not character.Parent or not rootPart.Parent or humanoid.Health <= 0 then
+if not character.Parent or humanoid.Health <= 0 or not rootPart.Parent then
 states[character] = nil
 continue
 end
 
-local upDir = getPlanetUp(rootPart.Position)
+local core = getCoreForCharacter(character)
+if not core then
+state.GravityForce.Force = Vector3.zero
+continue
+end
+
+local upDir = getPlanetUp(rootPart.Position, core.Position)
 local gravityDir = -upDir
 
 state.GravityForce.Force = gravityDir * rootPart.AssemblyMass * GRAVITY_ACCELERATION
 
-local debugPart = rootPart:FindFirstChild("GravityDebug")
-if debugPart then
-debugPart.CFrame = CFrame.lookAt(
-rootPart.Position + gravityDir * 5,
-rootPart.Position + gravityDir * 10
-)
-end
+local camF = safeUnit(projectOntoPlane(state.CamForward, upDir), state.LastForward)
+local camR = safeUnit(camF:Cross(upDir), rootPart.CFrame.RightVector)
 
-local currentLook = projectOntoPlane(rootPart.CFrame.LookVector, upDir)
-currentLook = safeUnit(currentLook, state.LastForward)
-
-local currentRight = safeUnit(currentLook:Cross(upDir), rootPart.CFrame.RightVector)
-
-local rawInput = state.MoveInput
-
-local desiredMove =
-(currentRight * rawInput.X) +
-(currentLook * -rawInput.Z)
-
+local axis = state.MoveAxis
+local desiredMove = (camR * axis.X) + (camF * -axis.Z)
 desiredMove = projectOntoPlane(desiredMove, upDir)
 
 local moveDir = Vector3.zero
@@ -245,21 +250,14 @@ if desiredMove.Magnitude > 0.001 then
 moveDir = desiredMove.Unit
 end
 
-local facingDir = moveDir
-if facingDir.Magnitude <= 0 then
-facingDir = currentLook
-end
+local facingDir = (moveDir.Magnitude > 0) and moveDir or camF
 facingDir = safeUnit(facingDir, state.LastForward)
 state.LastForward = facingDir
 
-state.Align.CFrame = CFrame.lookAt(
-rootPart.Position,
-rootPart.Position + facingDir,
-upDir
-)
+state.Align.CFrame = CFrame.lookAt(rootPart.Position, rootPart.Position + facingDir, upDir)
 
-local groundHit = getGroundHit(character, rootPart)
-local grounded = groundHit ~= nil and time() >= state.AirUntil
+local groundHit = getGroundHit(character, rootPart, core.Position)
+local grounded = (groundHit ~= nil) and (time() >= state.AirUntil)
 
 local velocity = rootPart.AssemblyLinearVelocity
 local radialVelocity = upDir * velocity:Dot(upDir)
@@ -268,7 +266,8 @@ local tangentVelocity = velocity - radialVelocity
 if moveDir.Magnitude > 0 then
 local speed = grounded and WALK_SPEED or AIR_CONTROL_SPEED
 local targetTangent = moveDir * speed
-local blendedTangent = tangentVelocity:Lerp(targetTangent, grounded and GROUND_MOVE_BLEND or AIR_MOVE_BLEND)
+local blend = grounded and GROUND_MOVE_BLEND or AIR_MOVE_BLEND
+local blendedTangent = tangentVelocity:Lerp(targetTangent, blend)
 rootPart.AssemblyLinearVelocity = radialVelocity + blendedTangent
 else
 rootPart.AssemblyLinearVelocity = radialVelocity + (tangentVelocity * IDLE_DAMPING)
@@ -277,36 +276,20 @@ end
 if groundHit then
 local desiredDistance = humanoid.HipHeight + (rootPart.Size.Y * 0.5) + SURFACE_CLEARANCE
 local actualDistance = (rootPart.Position - groundHit.Position).Magnitude
-
 if actualDistance < desiredDistance then
 local pushAmount = desiredDistance - actualDistance
 rootPart.AssemblyLinearVelocity += upDir * math.min(pushAmount * SURFACE_PUSH_SCALE, SURFACE_PUSH_MAX)
 end
 end
 
-local humState = humanoid:GetState()
-if humState == Enum.HumanoidStateType.Physics
-or humState == Enum.HumanoidStateType.PlatformStanding
-or humState == Enum.HumanoidStateType.Ragdoll then
-
-if grounded then
-humanoid:ChangeState(Enum.HumanoidStateType.Running)
-end
-end
-
 if state.JumpRequested and grounded and (time() - state.LastJumpTime) > JUMP_COOLDOWN then
-local currentVelocity = rootPart.AssemblyLinearVelocity
-local currentRadial = upDir * currentVelocity:Dot(upDir)
-local currentTangentOnly = currentVelocity - currentRadial
+local v = rootPart.AssemblyLinearVelocity
+local radial = upDir * v:Dot(upDir)
+local tangentOnly = v - radial
+rootPart.AssemblyLinearVelocity = tangentOnly + (upDir * JUMP_SPEED)
 
-rootPart.AssemblyLinearVelocity = currentTangentOnly + (upDir * JUMP_SPEED)
 state.LastJumpTime = time()
 state.AirUntil = time() + JUMP_AIR_LOCK
-end
-
-if time() - state.LastDebugPrint > 1 then
-state.LastDebugPrint = time()
-print("Input:", rawInput, "MoveDir:", moveDir, "Grounded:", grounded)
 end
 
 state.JumpRequested = false

@@ -1,3 +1,9 @@
+-- ServerScriptService/PlanetGravity.server.lua
+
+-- Server-authoritative spherical gravity + camera-relative movement (multi-planet)
+-- Requires:
+--   Workspace/Planets/
+
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")

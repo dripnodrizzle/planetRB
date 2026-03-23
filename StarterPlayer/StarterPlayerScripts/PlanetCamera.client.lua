@@ -5,6 +5,14 @@ local Workspace = game:GetService("Workspace")
 
 local remote = ReplicatedStorage:WaitForChild("PlanetGravityInput")
 
+local shiftValue = ReplicatedStorage:FindFirstChild("ShiftLockEnabled")
+if not shiftValue then
+	shiftValue = Instance.new("BoolValue")
+	shiftValue.Name = "ShiftLockEnabled"
+	shiftValue.Value = false
+	shiftValue.Parent = ReplicatedStorage
+end
+
 local jumpQueued = false
 UserInputService.JumpRequest:Connect(function()
 	jumpQueued = true
